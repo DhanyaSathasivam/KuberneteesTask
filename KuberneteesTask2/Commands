@@ -1,0 +1,226 @@
+# AWS EKS – Nginx Application Deployment
+
+## Complete Command Reference
+
+**AWS Region:** ap-south-1 (Mumbai)
+**EKS Cluster:** eks-cluster
+**EC2 Admin Instance:** Ubuntu
+**Tools:** AWS CLI, eksctl, kubectl
+
+---
+
+## 1. Verify AWS Configuration
+
+```bash
+export AWS_PAGER=""
+aws sts get-caller-identity
+aws configure get region
+aws eks list-clusters --region ap-south-1
+```
+
+## 2. Check EKS Cluster
+
+```bash
+aws eks describe-cluster --name eks-cluster --region ap-south-1 --query "cluster.status" --output text
+
+aws eks update-kubeconfig --region ap-south-1 --name eks-cluster
+
+kubectl get nodes
+```
+
+## 3. Check Existing EKS Access Entries
+
+```bash
+aws eks list-access-entries --cluster-name eks-cluster --region ap-south-1
+
+aws eks describe-access-entry --cluster-name eks-cluster --principal-arn arn:aws:iam::053108159501:role/AmazonEKSAutoNodeRole --region ap-south-1
+```
+
+## 4. Create EKS Administrator IAM Role
+
+```bash
+aws iam create-role --role-name EKSClusterAdminRole --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::053108159501:role/AmazonEKSAutoNodeRole"},"Action":"sts:AssumeRole"}]}'
+```
+
+Create EKS access entry:
+
+```bash
+aws eks create-access-entry --cluster-name eks-cluster --principal-arn arn:aws:iam::053108159501:role/EKSClusterAdminRole --type STANDARD --region ap-south-1
+```
+
+Associate cluster administrator policy:
+
+```bash
+aws eks associate-access-policy --cluster-name eks-cluster --principal-arn arn:aws:iam::053108159501:role/EKSClusterAdminRole --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy --access-scope type=cluster --region ap-south-1
+```
+
+## 5. Assume Administrator Role
+
+```bash
+read -r AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<< "$(aws sts assume-role --role-arn arn:aws:iam::053108159501:role/EKSClusterAdminRole --role-session-name eks-admin --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)" && export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+```
+
+Verify:
+
+```bash
+aws sts get-caller-identity
+kubectl get nodes
+```
+
+## 6. Deploy Nginx Application
+
+Create deployment:
+
+```bash
+kubectl create deployment nginx --image=nginx
+```
+
+Check deployment:
+
+```bash
+kubectl get deployments
+kubectl get pods
+```
+
+Expose Nginx using LoadBalancer:
+
+```bash
+kubectl expose deployment nginx --type=LoadBalancer --port=80 --target-port=80
+```
+
+Check service:
+
+```bash
+kubectl get svc nginx
+```
+
+## 7. Troubleshoot AWS LoadBalancer
+
+Check service details:
+
+```bash
+kubectl describe svc nginx
+```
+
+Check service YAML:
+
+```bash
+kubectl get svc nginx -o yaml
+```
+
+Check cluster configuration:
+
+```bash
+aws eks describe-cluster --name eks-cluster --region ap-south-1 --query 'cluster.{ClusterRole:roleArn,ComputeConfig:computeConfig,Version:version}' --output json
+```
+
+Check Auto Mode load balancing:
+
+```bash
+aws eks describe-cluster --name eks-cluster --region ap-south-1 --query 'cluster.kubernetesNetworkConfig.elasticLoadBalancing' --output json
+```
+
+Check cluster IAM policies:
+
+```bash
+aws iam list-attached-role-policies --role-name AmazonEKSAutoClusterRole
+```
+
+## 8. Configure Public Subnet Tags
+
+Switch back to EC2 instance role:
+
+```bash
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+```
+
+Verify identity:
+
+```bash
+aws sts get-caller-identity
+```
+
+Check subnet configuration:
+
+```bash
+aws ec2 describe-subnets --subnet-ids subnet-03605579ecd5bd571 subnet-0207457906e3c002d subnet-08223727a1f518148 --region ap-south-1 --query 'Subnets[].{SubnetId:SubnetId,AZ:AvailabilityZone,AvailableIPs:AvailableIpAddressCount,Tags:Tags}' --output json
+```
+
+Add public load balancer tags:
+
+```bash
+aws ec2 create-tags --resources subnet-03605579ecd5bd571 subnet-0207457906e3c002d subnet-08223727a1f518148 --tags Key=kubernetes.io/role/elb,Value=1 --region ap-south-1
+```
+
+Verify tags:
+
+```bash
+aws ec2 describe-subnets --subnet-ids subnet-03605579ecd5bd571 subnet-0207457906e3c002d subnet-08223727a1f518148 --region ap-south-1 --query 'Subnets[].{SubnetId:SubnetId,Tags:Tags}' --output json
+```
+
+## 9. Configure Public Network LoadBalancer
+
+Switch to administrator role again:
+
+```bash
+read -r AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN <<< "$(aws sts assume-role --role-arn arn:aws:iam::053108159501:role/EKSClusterAdminRole --role-session-name eks-admin --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)" && export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+```
+
+Set the load balancer scheme:
+
+```bash
+kubectl annotate service nginx service.beta.kubernetes.io/aws-load-balancer-scheme=internet-facing --overwrite
+```
+
+Check service:
+
+```bash
+kubectl describe svc nginx
+```
+
+Watch for external hostname:
+
+```bash
+kubectl get svc nginx -w
+```
+
+## 10. Access Nginx Externally
+
+Get the external hostname:
+
+```bash
+kubectl get svc nginx
+```
+
+Open the following URL in your browser:
+
+```text
+http://<EXTERNAL-IP>
+```
+
+Expected result:
+
+**Welcome to nginx!**
+
+## 11. Final Verification Commands
+
+```bash
+kubectl get nodes
+kubectl get pods -o wide
+kubectl get deployments
+kubectl get services
+kubectl describe svc nginx
+```
+
+## 12. Save Terminal Command History
+
+```bash
+history > eks-command-history.txt
+```
+
+View saved commands:
+
+```bash
+cat eks-command-history.txt
+``
+---
